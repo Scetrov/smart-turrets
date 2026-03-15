@@ -4,7 +4,7 @@ Standalone smart turret strategy package for the `aggressor_first` behavior.
 
 Witness type:
 
-- `<PACKAGE_ID>::turret::TurretAuth`
+- `<PACKAGE_ID>::aggressor_first::TurretAuth`
 
 Behavior:
 

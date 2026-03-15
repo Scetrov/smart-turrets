@@ -4,7 +4,7 @@ Standalone smart turret strategy package for the `low_hp_finisher` behavior.
 
 Witness type:
 
-- `<PACKAGE_ID>::turret::TurretAuth`
+- `<PACKAGE_ID>::low_hp_finisher::TurretAuth`
 
 Behavior:
 

@@ -1,12 +1,14 @@
 /// Standalone turret strategy that focuses on hostile player pilots and ignores NPC noise.
-module turret_player_screen::turret;
+module turret_player_screen::player_screen;
 
 use sui::bcs;
 use world::{
     character::{Self, Character},
     in_game_id,
-    turret::{Self, OnlineReceipt, ReturnTargetPriorityList, Turret},
+    turret::{OnlineReceipt, ReturnTargetPriorityList, Turret},
 };
+
+use world::turret as world_turret;
 
 const BEHAVIOUR_ENTERED: u8 = 1;
 const BEHAVIOUR_STARTED_ATTACK: u8 = 2;
@@ -45,7 +47,7 @@ public fun get_target_priority_list(
         character::tribe(owner_character),
         target_candidate_list,
     );
-    turret::destroy_online_receipt(receipt, TurretAuth {});
+    world_turret::destroy_online_receipt(receipt, TurretAuth {});
     bcs::to_bytes(&return_list)
 }
 
@@ -64,7 +66,7 @@ public(package) fun build_priority_list_for_owner(
         if (include) {
             vector::push_back(
                 &mut return_list,
-                turret::new_return_target_priority_list(candidate.item_id, weight),
+                world_turret::new_return_target_priority_list(candidate.item_id, weight),
             );
         };
         index = index + 1;

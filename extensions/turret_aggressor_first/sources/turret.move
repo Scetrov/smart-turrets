@@ -1,12 +1,14 @@
 /// Standalone turret strategy that aggressively defends the base against current attackers first.
-module turret_aggressor_first::turret;
+module turret_aggressor_first::aggressor_first;
 
 use sui::bcs;
 use world::{
     character::{Self, Character},
     in_game_id,
-    turret::{Self, OnlineReceipt, ReturnTargetPriorityList, Turret},
+    turret::{OnlineReceipt, ReturnTargetPriorityList, Turret},
 };
+
+use world::turret as world_turret;
 
 const BEHAVIOUR_ENTERED: u8 = 1;
 const BEHAVIOUR_STARTED_ATTACK: u8 = 2;
@@ -40,14 +42,14 @@ public fun get_target_priority_list(
     target_candidate_list: vector<u8>,
     receipt: OnlineReceipt,
 ): vector<u8> {
-    assert!(turret::turret_id(&receipt) == object::id(turret), 0);
+    assert!(receipt.turret_id() == object::id(turret), 0);
     let owner_character_id = in_game_id::item_id(&character::key(owner_character)) as u32;
     let return_list = build_priority_list_for_owner(
         owner_character_id,
         character::tribe(owner_character),
         target_candidate_list,
     );
-    turret::destroy_online_receipt(receipt, TurretAuth {});
+    world_turret::destroy_online_receipt(receipt, TurretAuth {});
     bcs::to_bytes(&return_list)
 }
 
@@ -66,7 +68,7 @@ public(package) fun build_priority_list_for_owner(
         if (include) {
             vector::push_back(
                 &mut return_list,
-                turret::new_return_target_priority_list(candidate.item_id, weight),
+                world_turret::new_return_target_priority_list(candidate.item_id, weight),
             );
         };
         index = index + 1;

@@ -4,7 +4,7 @@ Standalone smart turret strategy package for the `player_screen` behavior.
 
 Witness type:
 
-- `<PACKAGE_ID>::turret::TurretAuth`
+- `<PACKAGE_ID>::player_screen::TurretAuth`
 
 Behavior:
 

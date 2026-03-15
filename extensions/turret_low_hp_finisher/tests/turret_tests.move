@@ -2,7 +2,7 @@
 module turret_low_hp_finisher::turret_tests;
 
 use std::{bcs, unit_test::assert_eq};
-use turret_low_hp_finisher::turret;
+use turret_low_hp_finisher::low_hp_finisher;
 use world::turret::{Self, ReturnTargetPriorityList};
 
 const OWNER_CHARACTER_ID: u32 = 108;
@@ -57,7 +57,7 @@ fun assert_entry(entry: &ReturnTargetPriorityList, target_item_id: u64, priority
 
 #[test]
 fun low_hp_finisher_prefers_damaged_targets() {
-    let result = turret::build_priority_list_for_owner(
+    let result = low_hp_finisher::build_priority_list_for_owner(
         OWNER_CHARACTER_ID,
         OWNER_TRIBE,
         candidate_list_bytes(vector[

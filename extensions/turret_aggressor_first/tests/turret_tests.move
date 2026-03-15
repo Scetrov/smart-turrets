@@ -2,7 +2,7 @@
 module turret_aggressor_first::turret_tests;
 
 use std::{bcs, unit_test::assert_eq};
-use turret_aggressor_first::turret;
+use turret_aggressor_first::aggressor_first;
 use world::turret::{Self, ReturnTargetPriorityList};
 
 const OWNER_CHARACTER_ID: u32 = 108;
@@ -57,7 +57,7 @@ fun assert_entry(entry: &ReturnTargetPriorityList, target_item_id: u64, priority
 
 #[test]
 fun aggressor_first_prioritizes_active_attackers() {
-    let result = turret::build_priority_list_for_owner(
+    let result = aggressor_first::build_priority_list_for_owner(
         OWNER_CHARACTER_ID,
         OWNER_TRIBE,
         candidate_list_bytes(vector[

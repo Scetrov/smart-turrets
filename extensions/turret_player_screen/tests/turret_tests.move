@@ -2,7 +2,7 @@
 module turret_player_screen::turret_tests;
 
 use std::{bcs, unit_test::assert_eq};
-use turret_player_screen::turret;
+use turret_player_screen::player_screen;
 use world::turret::{Self, ReturnTargetPriorityList};
 
 const OWNER_CHARACTER_ID: u32 = 108;
@@ -57,7 +57,7 @@ fun assert_entry(entry: &ReturnTargetPriorityList, target_item_id: u64, priority
 
 #[test]
 fun player_screen_ignores_npcs_and_same_tribe_non_aggressors() {
-    let result = turret::build_priority_list_for_owner(
+    let result = player_screen::build_priority_list_for_owner(
         OWNER_CHARACTER_ID,
         OWNER_TRIBE,
         candidate_list_bytes(vector[

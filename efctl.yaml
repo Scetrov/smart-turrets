@@ -30,5 +30,5 @@ container-engine: auto-detect
 
 # Additional host directories to bind-mount into the container environment.
 additional-bind-mounts:
-   - hostPath: ./extensions
-     identifier: extensions
+  - hostPath: ./extensions
+    identifier: extensions

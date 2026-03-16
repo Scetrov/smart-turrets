@@ -1,3 +1,4 @@
 .pnpm-store/
 world-contracts/
 builder-scaffold/
+**/build/

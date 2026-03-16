@@ -1,0 +1,12 @@
+[package]
+name = "turret_round_robin"
+edition = "2024"
+
+[dependencies]
+world = { local = "../../world-contracts/contracts/world" }
+
+[environments]
+ef-localhost = "3e5d701e"
+testnet_internal = "4c78adac"
+testnet_utopia = "4c78adac"
+testnet_stillness = "4c78adac"

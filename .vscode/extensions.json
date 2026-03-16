@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "bierner.markdown-mermaid",
+        "damirka.move-syntax",
+        "mysten.move",
+        "mysten.prettier-move"
+    ]
+}

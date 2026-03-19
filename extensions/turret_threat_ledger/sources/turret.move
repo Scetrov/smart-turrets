@@ -1,19 +1,12 @@
-/// Turret strategy that maintains an on-chain threat ledger tracking cumulative aggression
-/// per tribe across multiple targeting calls.
+/// Turret strategy that approximates a threat ledger using only the current candidate list.
 ///
-/// Each time the turret is invoked, aggressors' tribes accumulate threat in a
-/// `Table<u32, u64>` (tribe_id → threat score).  Candidates from tribes with higher accumulated
-/// threat receive a proportionally larger weight bonus, so repeat offenders are fired upon with
-/// escalating priority.  Sending a `STOPPED_ATTACK` event partially forgives a tribe's threat,
-/// rewarding de-escalation.
-///
-/// Threat is capped per tribe at `max_threat` (configured at creation) to prevent indefinite
-/// runaway values.
+/// Without persistent storage this seed cannot accumulate threat across calls. Instead it uses
+/// hard-coded tracked tribe ids plus a bonus derived from the number of active aggressors from the
+/// same tribe in the current call.
 module turret_threat_ledger::threat_ledger;
 
-use sui::{bcs, table::{Self, Table}};
+use sui::{bcs, event};
 use world::{
-    access::{Self, OwnerCap},
     character::{Self, Character},
     in_game_id,
     turret::{OnlineReceipt, ReturnTargetPriorityList, Turret},
@@ -23,8 +16,10 @@ use world::turret as world_turret;
 
 #[error(code = 0)]
 const EInvalidOnlineReceipt: vector<u8> = b"Invalid online receipt";
-#[error(code = 1)]
-const ENotTurretOwner: vector<u8> = b"Caller is not the turret owner";
+
+// ---------------------------------------------------------------------------
+// Compile-time configuration
+// ---------------------------------------------------------------------------
 
 const BEHAVIOUR_ENTERED: u8 = 1;
 const BEHAVIOUR_STARTED_ATTACK: u8 = 2;
@@ -32,67 +27,29 @@ const BEHAVIOUR_STOPPED_ATTACK: u8 = 3;
 const STARTED_ATTACK_BONUS: u64 = 10_000;
 const AGGRESSOR_BONUS: u64 = 4_000;
 const ENTERED_BONUS: u64 = 1_000;
-/// Added to a tribe's threat score each time one of their members is an aggressor.
-const THREAT_INCREMENT: u64 = 1_000;
-/// Subtracted from a tribe's threat when a member sends STOPPED_ATTACK (forgiveness).
-const THREAT_DECREMENT: u64 = 500;
-/// Default per-tribe threat ceiling.
-const DEFAULT_MAX_THREAT: u64 = 20_000;
-/// Divisor applied to raw threat score before adding to weight (controls sensitivity).
-const THREAT_WEIGHT_DIVISOR: u64 = 2;
+const TRACKED_TRIBE_A: u32 = 200;
+const TRACKED_TRIBE_B: u32 = 300;
+const THREAT_PER_ACTIVE_AGGRESSOR: u64 = 1_500;
 
-/// Persistent on-chain threat ledger for each tribe.
-public struct ThreatLedgerConfig has key {
-    id: UID,
+public struct PriorityListUpdatedEvent has copy, drop {
     turret_id: ID,
-    /// tribe_id (u32) → accumulated threat score (u64).
-    tribe_threats: Table<u32, u64>,
-    /// Maximum threat any single tribe can accumulate.
-    max_threat: u64,
+    priority_list: vector<u8>,
 }
 
 public struct TurretAuth has drop {}
 
-// ---------------------------------------------------------------------------
-// Config management
-// ---------------------------------------------------------------------------
-
-public fun create_config(
-    turret: &Turret,
-    owner_cap: &OwnerCap<Turret>,
-    max_threat: u64,
-    ctx: &mut TxContext,
-) {
-    assert!(access::is_authorized(owner_cap, object::id(turret)), ENotTurretOwner);
-    let cap = if (max_threat == 0) { DEFAULT_MAX_THREAT } else { max_threat };
-    transfer::share_object(ThreatLedgerConfig {
-        id: object::new(ctx),
-        turret_id: object::id(turret),
-        tribe_threats: table::new(ctx),
-        max_threat: cap,
-    });
-}
-
-/// Manually resets a tribe's threat score to zero (owner only).
-public fun pardon_tribe(
-    config: &mut ThreatLedgerConfig,
-    turret: &Turret,
-    owner_cap: &OwnerCap<Turret>,
-    tribe_id: u32,
-) {
-    assert!(access::is_authorized(owner_cap, object::id(turret)), ENotTurretOwner);
-    if (table::contains(&config.tribe_threats, tribe_id)) {
-        *table::borrow_mut(&mut config.tribe_threats, tribe_id) = 0;
-    };
-}
-
-/// Returns the current threat score for a tribe (0 if never seen).
-public fun tribe_threat(config: &ThreatLedgerConfig, tribe_id: u32): u64 {
-    if (table::contains(&config.tribe_threats, tribe_id)) {
-        *table::borrow(&config.tribe_threats, tribe_id)
-    } else {
-        0
-    }
+public struct TargetCandidateArg has copy, drop, store {
+    item_id: u64,
+    type_id: u64,
+    group_id: u64,
+    character_id: u32,
+    character_tribe: u32,
+    hp_ratio: u64,
+    shield_ratio: u64,
+    armor_ratio: u64,
+    is_aggressor: bool,
+    priority_weight: u64,
+    behaviour_change: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +59,6 @@ public fun tribe_threat(config: &ThreatLedgerConfig, tribe_id: u32): u64 {
 public fun get_target_priority_list(
     turret: &Turret,
     owner_character: &Character,
-    config: &mut ThreatLedgerConfig,
     target_candidate_list: vector<u8>,
     receipt: OnlineReceipt,
 ): vector<u8> {
@@ -111,29 +67,29 @@ public fun get_target_priority_list(
     let return_list = build_priority_list_for_owner(
         owner_character_id,
         character::tribe(owner_character),
-        &mut config.tribe_threats,
-        config.max_threat,
         target_candidate_list,
     );
+    let result = bcs::to_bytes(&return_list);
     world_turret::destroy_online_receipt(receipt, TurretAuth {});
-    bcs::to_bytes(&return_list)
+    event::emit(PriorityListUpdatedEvent {
+        turret_id: object::id(turret),
+        priority_list: result,
+    });
+    result
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Internal scoring helpers
 // ---------------------------------------------------------------------------
 
 public(package) fun build_priority_list_for_owner(
     owner_character_id: u32,
     owner_tribe: u32,
-    tribe_threats: &mut Table<u32, u64>,
-    max_threat: u64,
     target_candidate_list: vector<u8>,
 ): vector<ReturnTargetPriorityList> {
     let candidates = unpack_candidate_list(target_candidate_list);
-    // Pass 1: update ledger based on this round's behaviour events
-    update_threats(tribe_threats, &candidates, max_threat);
-    // Pass 2: score candidates using the now-updated threat scores
+    let tracked_tribe_ids = tracked_tribe_ids();
+    let tracked_tribe_base_bonuses = tracked_tribe_base_bonuses();
     let mut return_list = vector::empty();
     let mut index = 0u64;
     let len = vector::length(&candidates);
@@ -142,7 +98,9 @@ public(package) fun build_priority_list_for_owner(
         let (weight, include) = score_candidate(
             owner_character_id,
             owner_tribe,
-            tribe_threats,
+            &tracked_tribe_ids,
+            &tracked_tribe_base_bonuses,
+            &candidates,
             candidate,
         );
         if (include) {
@@ -156,51 +114,20 @@ public(package) fun build_priority_list_for_owner(
     return_list
 }
 
-/// Updates the threat table: aggressors increment their tribe's threat, STOPPED_ATTACK decrements.
-/// Skips tribe_id 0 (NPCs have no tribe).
-fun update_threats(
-    tribe_threats: &mut Table<u32, u64>,
-    candidates: &vector<TargetCandidateArg>,
-    max_threat: u64,
-) {
-    let mut i = 0u64;
-    let len = vector::length(candidates);
-    while (i < len) {
-        let candidate = vector::borrow(candidates, i);
-        let tribe = candidate.character_tribe;
-        if (tribe != 0) {
-            if (candidate.behaviour_change == BEHAVIOUR_STOPPED_ATTACK) {
-                if (table::contains(tribe_threats, tribe)) {
-                    let threat = table::borrow_mut(tribe_threats, tribe);
-                    if (*threat >= THREAT_DECREMENT) {
-                        *threat = *threat - THREAT_DECREMENT;
-                    } else {
-                        *threat = 0;
-                    };
-                };
-            } else if (candidate.is_aggressor) {
-                if (table::contains(tribe_threats, tribe)) {
-                    let threat = table::borrow_mut(tribe_threats, tribe);
-                    let new_val = *threat + THREAT_INCREMENT;
-                    *threat = if (new_val > max_threat) { max_threat } else { new_val };
-                } else {
-                    let initial = if (THREAT_INCREMENT > max_threat) {
-                        max_threat
-                    } else {
-                        THREAT_INCREMENT
-                    };
-                    table::add(tribe_threats, tribe, initial);
-                };
-            };
-        };
-        i = i + 1;
-    };
+fun tracked_tribe_ids(): vector<u32> {
+    vector[TRACKED_TRIBE_A, TRACKED_TRIBE_B]
+}
+
+fun tracked_tribe_base_bonuses(): vector<u64> {
+    vector[2_000u64, 1_000u64]
 }
 
 fun score_candidate(
     owner_character_id: u32,
     owner_tribe: u32,
-    tribe_threats: &Table<u32, u64>,
+    tracked_tribe_ids: &vector<u32>,
+    tracked_tribe_base_bonuses: &vector<u64>,
+    candidates: &vector<TargetCandidateArg>,
     candidate: &TargetCandidateArg,
 ): (u64, bool) {
     let is_owner = candidate.character_id == owner_character_id;
@@ -224,40 +151,57 @@ fun score_candidate(
     if (aggressor) {
         weight = weight + AGGRESSOR_BONUS;
     };
-    // Threat bonus — capped by max_threat / DIVISOR
-    let threat = get_tribe_threat(tribe_threats, candidate.character_tribe);
-    weight = weight + (threat / THREAT_WEIGHT_DIVISOR);
+
+    weight = weight + lookup_tracked_tribe_bonus(
+        tracked_tribe_ids,
+        tracked_tribe_base_bonuses,
+        candidates,
+        candidate.character_tribe,
+    );
     (weight, true)
 }
 
-fun get_tribe_threat(tribe_threats: &Table<u32, u64>, tribe: u32): u64 {
-    if (table::contains(tribe_threats, tribe)) {
-        *table::borrow(tribe_threats, tribe)
-    } else {
-        0
-    }
+fun lookup_tracked_tribe_bonus(
+    tracked_tribe_ids: &vector<u32>,
+    tracked_tribe_base_bonuses: &vector<u64>,
+    candidates: &vector<TargetCandidateArg>,
+    tribe_id: u32,
+): u64 {
+    let mut index = 0u64;
+    while (index < vector::length(tracked_tribe_ids)) {
+        if (*vector::borrow(tracked_tribe_ids, index) == tribe_id) {
+            let base_bonus = *vector::borrow(tracked_tribe_base_bonuses, index);
+            let aggressor_count = count_tribe_aggressors(candidates, tribe_id);
+            return base_bonus + (aggressor_count * THREAT_PER_ACTIVE_AGGRESSOR)
+        };
+        index = index + 1;
+    };
+    0
 }
 
-public struct TargetCandidateArg has copy, drop, store {
-    item_id: u64,
-    type_id: u64,
-    group_id: u64,
-    character_id: u32,
-    character_tribe: u32,
-    hp_ratio: u64,
-    shield_ratio: u64,
-    armor_ratio: u64,
-    is_aggressor: bool,
-    priority_weight: u64,
-    behaviour_change: u8,
+fun count_tribe_aggressors(candidates: &vector<TargetCandidateArg>, tribe_id: u32): u64 {
+    let mut index = 0u64;
+    let mut count = 0u64;
+    while (index < vector::length(candidates)) {
+        let candidate = vector::borrow(candidates, index);
+        if (candidate.character_tribe == tribe_id && candidate.is_aggressor) {
+            count = count + 1;
+        };
+        index = index + 1;
+    };
+    count
 }
+
+// ---------------------------------------------------------------------------
+// BCS decoding
+// ---------------------------------------------------------------------------
 
 fun unpack_candidate_list(candidate_list_bytes: vector<u8>): vector<TargetCandidateArg> {
     if (vector::length(&candidate_list_bytes) == 0) {
         return vector::empty()
     };
     let mut bcs_data = bcs::new(candidate_list_bytes);
-    bcs_data.peel_vec!(|bcs| peel_target_candidate_from_bcs(bcs))
+    bcs_data.peel_vec!(|candidate_bcs| peel_target_candidate_from_bcs(candidate_bcs))
 }
 
 fun peel_target_candidate_from_bcs(bcs_data: &mut bcs::BCS): TargetCandidateArg {

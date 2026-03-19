@@ -12,9 +12,11 @@
 ///   3 → Frigate (25)
 ///   2 → Corvette (237)
 ///   1 → Shuttle (31) / unknown
+///
+/// Compile-time configuration is limited to the group-id mapping and weight constants below.
 module turret_size_priority::size_priority;
 
-use sui::bcs;
+use sui::{bcs, event};
 use world::{
     character::{Self, Character},
     in_game_id,
@@ -25,6 +27,10 @@ use world::turret as world_turret;
 
 #[error(code = 0)]
 const EInvalidOnlineReceipt: vector<u8> = b"Invalid online receipt";
+
+// ---------------------------------------------------------------------------
+// Compile-time configuration
+// ---------------------------------------------------------------------------
 
 const BEHAVIOUR_ENTERED: u8 = 1;
 const BEHAVIOUR_STARTED_ATTACK: u8 = 2;
@@ -43,6 +49,13 @@ const GROUP_DESTROYER: u64 = 420;
 const GROUP_CRUISER: u64 = 26;
 const GROUP_BATTLECRUISER: u64 = 419;
 
+public struct PriorityListUpdatedEvent has copy, drop {
+    turret_id: ID,
+    priority_list: vector<u8>,
+}
+
+public struct TurretAuth has drop {}
+
 public struct TargetCandidateArg has copy, drop, store {
     item_id: u64,
     type_id: u64,
@@ -57,7 +70,9 @@ public struct TargetCandidateArg has copy, drop, store {
     behaviour_change: u8,
 }
 
-public struct TurretAuth has drop {}
+// ---------------------------------------------------------------------------
+// Targeting
+// ---------------------------------------------------------------------------
 
 public fun get_target_priority_list(
     turret: &Turret,
@@ -72,9 +87,18 @@ public fun get_target_priority_list(
         character::tribe(owner_character),
         target_candidate_list,
     );
+    let result = bcs::to_bytes(&return_list);
     world_turret::destroy_online_receipt(receipt, TurretAuth {});
-    bcs::to_bytes(&return_list)
+    event::emit(PriorityListUpdatedEvent {
+        turret_id: object::id(turret),
+        priority_list: result,
+    });
+    result
 }
+
+// ---------------------------------------------------------------------------
+// Internal scoring helpers
+// ---------------------------------------------------------------------------
 
 public(package) fun build_priority_list_for_owner(
     owner_character_id: u32,
@@ -142,12 +166,16 @@ fun tier_for_group(group_id: u64): u64 {
     else { 1 }
 }
 
+// ---------------------------------------------------------------------------
+// BCS decoding
+// ---------------------------------------------------------------------------
+
 fun unpack_candidate_list(candidate_list_bytes: vector<u8>): vector<TargetCandidateArg> {
     if (vector::length(&candidate_list_bytes) == 0) {
         return vector::empty()
     };
     let mut bcs_data = bcs::new(candidate_list_bytes);
-    bcs_data.peel_vec!(|bcs| peel_target_candidate_from_bcs(bcs))
+    bcs_data.peel_vec!(|candidate_bcs| peel_target_candidate_from_bcs(candidate_bcs))
 }
 
 fun peel_target_candidate_from_bcs(bcs_data: &mut bcs::BCS): TargetCandidateArg {

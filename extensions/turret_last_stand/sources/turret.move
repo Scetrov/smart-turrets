@@ -11,9 +11,12 @@
 ///
 /// The threshold is evaluated fresh each call from the live candidate list, so the mode
 /// automatically drops back to normal once aggressors stop appearing.
+///
+/// Compile-time configuration is limited to the threshold and bonus constants below. There is no
+/// persistent mode state in this seed.
 module turret_last_stand::last_stand;
 
-use sui::bcs;
+use sui::{bcs, event};
 use world::{
     character::{Self, Character},
     in_game_id,
@@ -24,6 +27,10 @@ use world::turret as world_turret;
 
 #[error(code = 0)]
 const EInvalidOnlineReceipt: vector<u8> = b"Invalid online receipt";
+
+// ---------------------------------------------------------------------------
+// Compile-time configuration
+// ---------------------------------------------------------------------------
 
 const BEHAVIOUR_ENTERED: u8 = 1;
 const BEHAVIOUR_STARTED_ATTACK: u8 = 2;
@@ -44,6 +51,13 @@ const RAID_ENTERED_BONUS: u64 = 500;
 /// Per combined-damage-percent bonus (sum of shield + armor + hull damage %).
 const RAID_DAMAGE_MULTIPLIER: u64 = 150;
 
+public struct PriorityListUpdatedEvent has copy, drop {
+    turret_id: ID,
+    priority_list: vector<u8>,
+}
+
+public struct TurretAuth has drop {}
+
 public struct TargetCandidateArg has copy, drop, store {
     item_id: u64,
     type_id: u64,
@@ -58,7 +72,9 @@ public struct TargetCandidateArg has copy, drop, store {
     behaviour_change: u8,
 }
 
-public struct TurretAuth has drop {}
+// ---------------------------------------------------------------------------
+// Targeting
+// ---------------------------------------------------------------------------
 
 public fun get_target_priority_list(
     turret: &Turret,
@@ -73,9 +89,18 @@ public fun get_target_priority_list(
         character::tribe(owner_character),
         target_candidate_list,
     );
+    let result = bcs::to_bytes(&return_list);
     world_turret::destroy_online_receipt(receipt, TurretAuth {});
-    bcs::to_bytes(&return_list)
+    event::emit(PriorityListUpdatedEvent {
+        turret_id: object::id(turret),
+        priority_list: result,
+    });
+    result
 }
+
+// ---------------------------------------------------------------------------
+// Internal scoring helpers
+// ---------------------------------------------------------------------------
 
 public(package) fun build_priority_list_for_owner(
     owner_character_id: u32,
@@ -177,12 +202,16 @@ fun score_raid(
     (weight, true)
 }
 
+// ---------------------------------------------------------------------------
+// BCS decoding
+// ---------------------------------------------------------------------------
+
 fun unpack_candidate_list(candidate_list_bytes: vector<u8>): vector<TargetCandidateArg> {
     if (vector::length(&candidate_list_bytes) == 0) {
         return vector::empty()
     };
     let mut bcs_data = bcs::new(candidate_list_bytes);
-    bcs_data.peel_vec!(|bcs| peel_target_candidate_from_bcs(bcs))
+    bcs_data.peel_vec!(|candidate_bcs| peel_target_candidate_from_bcs(candidate_bcs))
 }
 
 fun peel_target_candidate_from_bcs(bcs_data: &mut bcs::BCS): TargetCandidateArg {

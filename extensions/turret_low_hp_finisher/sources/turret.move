@@ -1,7 +1,10 @@
 /// Standalone turret strategy that favors hostile targets already close to destruction.
+///
+/// Compile-time configuration is limited to the bonus constants below. There is no per-turret
+/// runtime customization in this seed.
 module turret_low_hp_finisher::low_hp_finisher;
 
-use sui::bcs;
+use sui::{bcs, event};
 use world::{
     character::{Self, Character},
     in_game_id,
@@ -10,6 +13,13 @@ use world::{
 
 use world::turret as world_turret;
 
+#[error(code = 0)]
+const EInvalidOnlineReceipt: vector<u8> = b"Invalid online receipt";
+
+// ---------------------------------------------------------------------------
+// Compile-time configuration
+// ---------------------------------------------------------------------------
+
 const BEHAVIOUR_ENTERED: u8 = 1;
 const BEHAVIOUR_STARTED_ATTACK: u8 = 2;
 const BEHAVIOUR_STOPPED_ATTACK: u8 = 3;
@@ -17,6 +27,13 @@ const STARTED_ATTACK_BONUS: u64 = 8_000;
 const AGGRESSOR_BONUS: u64 = 4_000;
 const ENTERED_BONUS: u64 = 1_500;
 const EHP_DAMAGE_MULTIPLIER: u64 = 100;
+
+public struct PriorityListUpdatedEvent has copy, drop {
+    turret_id: ID,
+    priority_list: vector<u8>,
+}
+
+public struct TurretAuth has drop {}
 
 public struct TargetCandidateArg has copy, drop, store {
     item_id: u64,
@@ -32,7 +49,9 @@ public struct TargetCandidateArg has copy, drop, store {
     behaviour_change: u8,
 }
 
-public struct TurretAuth has drop {}
+// ---------------------------------------------------------------------------
+// Targeting
+// ---------------------------------------------------------------------------
 
 public fun get_target_priority_list(
     turret: &Turret,
@@ -40,16 +59,25 @@ public fun get_target_priority_list(
     target_candidate_list: vector<u8>,
     receipt: OnlineReceipt,
 ): vector<u8> {
-    assert!(receipt.turret_id() == object::id(turret), 0);
+    assert!(receipt.turret_id() == object::id(turret), EInvalidOnlineReceipt);
     let owner_character_id = in_game_id::item_id(&character::key(owner_character)) as u32;
     let return_list = build_priority_list_for_owner(
         owner_character_id,
         character::tribe(owner_character),
         target_candidate_list,
     );
+    let result = bcs::to_bytes(&return_list);
     world_turret::destroy_online_receipt(receipt, TurretAuth {});
-    bcs::to_bytes(&return_list)
+    event::emit(PriorityListUpdatedEvent {
+        turret_id: object::id(turret),
+        priority_list: result,
+    });
+    result
 }
+
+// ---------------------------------------------------------------------------
+// Internal scoring helpers
+// ---------------------------------------------------------------------------
 
 public(package) fun build_priority_list_for_owner(
     owner_character_id: u32,
@@ -102,10 +130,14 @@ fun score_candidate(
     };
 
     let remaining_total = candidate.hp_ratio + candidate.shield_ratio + candidate.armor_ratio;
-    let damage_total = 300 - remaining_total;
+    let damage_total = if (remaining_total <= 300) { 300 - remaining_total } else { 0 };
     weight = weight + (damage_total * EHP_DAMAGE_MULTIPLIER);
     (weight, true)
 }
+
+// ---------------------------------------------------------------------------
+// BCS decoding
+// ---------------------------------------------------------------------------
 
 fun unpack_candidate_list(candidate_list_bytes: vector<u8>): vector<TargetCandidateArg> {
     if (vector::length(&candidate_list_bytes) == 0) {

@@ -2,7 +2,7 @@
 module turret_aggressor_first::turret_tests;
 
 use std::{bcs, unit_test::assert_eq};
-use turret_aggressor_first::turret as aggressor_turret;
+use turret_aggressor_first::aggressor_first as aggressor_turret;
 use world::turret::{Self, ReturnTargetPriorityList};
 
 const OWNER_CHARACTER_ID: u32 = 108;
